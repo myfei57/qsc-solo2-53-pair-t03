@@ -1,7 +1,7 @@
 """平台装配与控制循环。
 
 ``Platform`` 把各组件按真实调用链接起来，并暴露四件事：操作编排（装煤、
-推焦、熄焦、换向、炉门清扫）、控制循环、并发仲裁探测和状态快照。控制循环
+推焦、温度反馈熄焦、换向、炉门清扫）、控制循环、并发仲裁探测和状态快照。控制循环
 每个周期做三件事：把集气管压力调向目标带、按推焦联动时序驱动除尘挡板、
 采集趋势；换向与推焦这类跨模块动作都由编排一次性走完并写审计。
 """
@@ -46,6 +46,7 @@ from .telemetry import TrendBuffer
 
 DEFAULT_UNIT = "battery1"
 DEFAULT_OVEN = "oven01"
+DEFAULT_QUENCH_TEMPERATURE_C = 1100.0
 
 
 class Platform:
@@ -106,6 +107,7 @@ class Platform:
             ("battery", "guide", "guide-car"),
             ("battery", "charger", "charging-car"),
             ("battery", "quench", "quench-car"),
+            ("battery", "quench_tank", "reuse-water-tank"),
             ("battery", "collector", "collector-main"),
             ("battery", "bridge_flap", "bridge-flap"),
             ("battery", "door", "door-cleaner"),
@@ -157,7 +159,8 @@ class Platform:
                     step["action"],
                     oven=oven,
                     op_id=op_id,
-                    severity="notice",
+                    severity=step.get("severity", "notice"),
+                    message=step.get("message", ""),
                     **detail,
                 )
             )
@@ -268,18 +271,65 @@ class Platform:
             self._persist()
             return {**report, **summary}
 
-    def quench(self, oven: str = DEFAULT_OVEN, dt: float = 1.0) -> dict:
-        """熄焦编排：接焦 → 走行 → 喷淋。"""
+    def quench(
+        self,
+        oven: str = DEFAULT_OVEN,
+        dt: float = 1.0,
+        *,
+        coke_t: float | None = None,
+        initial_temperature_c: float | None = DEFAULT_QUENCH_TEMPERATURE_C,
+        temperatures_c: list[float | None] | None = None,
+        levels_m3: list[float | None] | None = None,
+        low_level_policy: str = "reduce",
+    ) -> dict:
+        """熄焦编排：接焦 → 走行 → 温度反馈喷淋。"""
+
+        if low_level_policy not in ("reduce", "alarm"):
+            raise ValueError("低水位策略必须是 reduce 或 alarm")
 
         with self._lock:
             op_id = self.ids.next()
-            report = quench_oven(self.quench_car, oven, dt)
+            report = quench_oven(
+                self.quench_car,
+                oven,
+                dt,
+                coke_t=coke_t,
+                initial_temperature_c=initial_temperature_c,
+                temperatures_c=temperatures_c,
+                levels_m3=levels_m3,
+                low_level_policy=low_level_policy,
+            )
             report["travel_eta_s"] = self.quench_car.plan.eta_s()
+            snapshot = self.quench_car.snapshot()
+            self.trend.append("quench_spray_flow_m3_h", self.clock.now(), snapshot.spray_intensity_m3_h)
+            self.trend.append(
+                "quench_tank_level_fraction",
+                self.clock.now(),
+                snapshot.tank_level_fraction if snapshot.tank_level_fraction is not None else -1.0,
+            )
             summary = self._record_operation(op_id, "quench", report)
             summary["op_id"] = op_id
             self._operations += 1
             self._persist()
             return {**report, **summary}
+
+    def recover_quench(self, recovery_id: str) -> dict:
+        """手动恢复暂停的喷淋；相同 recovery_id 的重复请求幂等。"""
+
+        with self._lock:
+            result = self.quench_car.recover_spray(recovery_id)
+            payload = {"recovery_id": recovery_id, "idempotency_key": recovery_id, **result}
+            self.bus.publish(
+                Event.of(
+                    "quench",
+                    "quench",
+                    "spray_recovery_requested",
+                    severity="notice",
+                    message="喷淋恢复请求已处理",
+                    **payload,
+                )
+            )
+            return payload
 
     def reverse(self, oven: str = DEFAULT_OVEN, temperature_c: float | None = None) -> dict:
         """换向编排：废气阀 → 煤气阀 → 炉温确认。"""
@@ -471,6 +521,7 @@ class Platform:
             "guide": self.guide.snapshot().as_dict(),
             "charger": self.charger.snapshot().as_dict(),
             "quench": self.quench_car.snapshot().as_dict(),
+            "quench_tank": self.quench_car.tank.snapshot(),
             "gas": {
                 "pressure_pa": round(self.collector.pressure_pa, 2),
                 "target_pa": self.collector.limits.pressure_target_pa,

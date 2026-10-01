@@ -24,7 +24,7 @@ def test_load_config_round_trips_through_mapping(tmp_path):
     path.write_text(json.dumps(payload), encoding="utf-8")
     loaded = load_config(str(path))
     assert loaded.pusher == default_config().pusher
-    assert loaded.quench.spray_duration_s == default_config().quench.spray_duration_s
+    assert loaded.quench.water_flow_max_m3_h == default_config().quench.water_flow_max_m3_h
 
 
 def test_load_config_rejects_missing_file():

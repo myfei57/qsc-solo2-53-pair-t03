@@ -25,8 +25,22 @@
     "quench": {
       "travel_distance_m": 42.0,
       "travel_speed_m_s": 1.6,
-      "spray_duration_s": 90.0,
-      "water_flow_m3_h": 320.0
+      "water_flow_min_m3_h": 80.0,
+      "water_flow_max_m3_h": 420.0,
+      "water_flow_fallback_m3_h": 120.0,
+      "temp_target_c": 95.0,
+      "temp_soak_s": 10.0,
+      "spray_max_s": 900.0,
+      "thermal_m3_per_t_c": 0.00042,
+      "default_coke_t": 28.0,
+      "tank_capacity_m3": 240.0,
+      "tank_initial_m3": 170.0,
+      "tank_low_fraction": 0.30,
+      "tank_low_low_fraction": 0.18,
+      "tank_high_fraction": 0.88,
+      "tank_high_high_fraction": 0.95,
+      "tank_makeup_m3_h": 180.0,
+      "tank_return_fraction": 0.72
     },
     "collector": {
       "pressure_target_pa": 90.0,

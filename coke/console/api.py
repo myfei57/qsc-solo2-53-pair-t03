@@ -20,6 +20,27 @@ def _as_float(body: dict, key: str, default: float) -> float:
         raise CokeError(f"参数 {key!r} 必须是数值", component="console") from error
 
 
+def _optional_float(body: dict, key: str) -> float | None:
+    if key not in body or body[key] is None:
+        return None
+    return _as_float(body, key, 0.0)
+
+
+def _float_series(body: dict, key: str) -> list[float | None] | None:
+    value = body.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise CokeError(f"参数 {key!r} 必须是数组", component="console")
+    series: list[float | None] = []
+    for item in value:
+        if item is None:
+            series.append(None)
+        else:
+            series.append(_as_float({key: item}, key, 0.0))
+    return series
+
+
 class Api:
     """把 HTTP 请求翻译成平台调用。"""
 
@@ -50,6 +71,7 @@ class Api:
         add("POST", "/api/charge", self._charge)
         add("POST", "/api/push", self._push)
         add("POST", "/api/quench", self._quench)
+        add("POST", "/api/quench/recover", self._recover_quench)
         add("POST", "/api/reverse", self._reverse)
         add("POST", "/api/clean", self._clean)
         add("POST", "/api/calibrate", self._calibrate)
@@ -160,9 +182,24 @@ class Api:
         )
 
     def _quench(self, params: dict, body: dict) -> dict:
+        policy = str(body.get("low_level_policy", "reduce"))
+        if policy not in ("reduce", "alarm"):
+            raise CokeError("low_level_policy 必须是 reduce 或 alarm", component="console")
         return self._platform.quench(
-            oven=str(body.get("oven", "oven01")), dt=_as_float(body, "dt", 1.0)
+            oven=str(body.get("oven", "oven01")),
+            dt=_as_float(body, "dt", 1.0),
+            coke_t=_optional_float(body, "coke_t"),
+            initial_temperature_c=_optional_float(body, "initial_temperature_c"),
+            temperatures_c=_float_series(body, "temperatures_c"),
+            levels_m3=_float_series(body, "levels_m3"),
+            low_level_policy=policy,
         )
+
+    def _recover_quench(self, params: dict, body: dict) -> dict:
+        recovery_id = str(body.get("recovery_id", ""))
+        if not recovery_id:
+            raise CokeError("recovery_id 不能为空", component="console")
+        return self._platform.recover_quench(recovery_id)
 
     def _reverse(self, params: dict, body: dict) -> dict:
         temperature = body.get("temperature_c")

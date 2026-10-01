@@ -87,7 +87,13 @@ def test_quench_spray_requires_travel():
     quench.receive("oven01")
     with pytest.raises(InterlockError):
         quench.start_spray()
-    report = quench_oven(quench, "oven01")
+    report = quench_oven(
+        quench,
+        "oven01",
+        coke_t=config.quench.default_coke_t,
+        initial_temperature_c=1100.0,
+        levels_m3=[config.quench.tank_initial_m3],
+    )
     assert report["ok"] is True
     order = [step["action"] for step in report["steps"]]
     assert order.index("receive") < order.index("travel")

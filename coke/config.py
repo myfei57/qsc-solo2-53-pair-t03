@@ -1,9 +1,9 @@
 """平台配置。
 
 配置来自 JSON 文件（标准库解析），覆盖推焦行程基线、导焦栅对齐公差、集气
-管压力带、熄焦喷淋时长、换向间隔、炉温确认带、除尘挡板联动参数与存储目录。
-任何缺失或越界取值都在装配阶段抛出 :class:`ConfigError`，不允许带着半份
-配置启动控制链。
+管压力带、温度反馈熄焦喷淋、回用水池容量与硬联锁阈值、换向间隔、炉温确认带、
+除尘挡板联动参数与存储目录。任何缺失或越界取值都在装配阶段抛出
+:class:`ConfigError`，不允许带着半份配置启动控制链。
 """
 
 from __future__ import annotations
@@ -108,21 +108,67 @@ class ChargerLimits:
 
 @dataclass(frozen=True)
 class QuenchLimits:
-    """熄焦车走行与喷淋约束。"""
+    """熄焦车走行、喷淋与回用水池约束。"""
 
     travel_distance_m: float
     travel_speed_m_s: float
-    spray_duration_s: float
-    water_flow_m3_h: float
+    water_flow_min_m3_h: float
+    water_flow_max_m3_h: float
+    water_flow_fallback_m3_h: float
+    temp_target_c: float
+    temp_soak_s: float
+    spray_max_s: float
+    thermal_m3_per_t_c: float
+    default_coke_t: float
+    tank_capacity_m3: float
+    tank_initial_m3: float
+    tank_low_fraction: float
+    tank_low_low_fraction: float
+    tank_high_fraction: float
+    tank_high_high_fraction: float
+    tank_makeup_m3_h: float
+    tank_return_fraction: float
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, Any]) -> "QuenchLimits":
-        return cls(
+        limits = cls(
             travel_distance_m=_number(section, "travel_distance_m", minimum=1.0),
             travel_speed_m_s=_number(section, "travel_speed_m_s", minimum=0.1),
-            spray_duration_s=_number(section, "spray_duration_s", minimum=1.0),
-            water_flow_m3_h=_number(section, "water_flow_m3_h", minimum=1.0),
+            water_flow_min_m3_h=_number(section, "water_flow_min_m3_h", minimum=0.0),
+            water_flow_max_m3_h=_number(section, "water_flow_max_m3_h", minimum=0.1),
+            water_flow_fallback_m3_h=_number(section, "water_flow_fallback_m3_h", minimum=0.0),
+            temp_target_c=_number(section, "temp_target_c", minimum=1.0),
+            temp_soak_s=_number(section, "temp_soak_s", minimum=0.0),
+            spray_max_s=_number(section, "spray_max_s", minimum=1.0),
+            thermal_m3_per_t_c=_number(section, "thermal_m3_per_t_c", minimum=0.00001),
+            default_coke_t=_number(section, "default_coke_t", minimum=0.1),
+            tank_capacity_m3=_number(section, "tank_capacity_m3", minimum=1.0),
+            tank_initial_m3=_number(section, "tank_initial_m3", minimum=0.0),
+            tank_low_fraction=_number(section, "tank_low_fraction", minimum=0.0),
+            tank_low_low_fraction=_number(section, "tank_low_low_fraction", minimum=0.0),
+            tank_high_fraction=_number(section, "tank_high_fraction", minimum=0.0),
+            tank_high_high_fraction=_number(section, "tank_high_high_fraction", minimum=0.0),
+            tank_makeup_m3_h=_number(section, "tank_makeup_m3_h", minimum=0.0),
+            tank_return_fraction=_number(section, "tank_return_fraction", minimum=0.0),
         )
+        if not limits.water_flow_min_m3_h <= limits.water_flow_max_m3_h:
+            raise ConfigError("熄焦喷淋最小流量不得大于最大流量", component="config")
+        if not limits.water_flow_min_m3_h <= limits.water_flow_fallback_m3_h <= limits.water_flow_max_m3_h:
+            raise ConfigError("保守喷淋流量必须落在喷淋流量上下限之间", component="config")
+        if not (
+            0.0
+            <= limits.tank_low_low_fraction
+            < limits.tank_low_fraction
+            < limits.tank_high_fraction
+            < limits.tank_high_high_fraction
+            <= 1.0
+        ):
+            raise ConfigError("回用水池阈值必须满足 low-low < low < high < high-high", component="config")
+        if not 0.0 <= limits.tank_return_fraction <= 1.0:
+            raise ConfigError("喷淋回水比例必须在 0 到 1 之间", component="config")
+        if not 0.0 <= limits.tank_initial_m3 <= limits.tank_capacity_m3:
+            raise ConfigError("回用水池初始水位必须在池容范围内", component="config")
+        return limits
 
 
 @dataclass(frozen=True)
@@ -273,7 +319,26 @@ def default_config() -> PlatformConfig:
         pusher=PusherLimits(3200.0, 25.0, 3350.0, 12.0, 38.0, 24.0),
         guide=GuideLimits(15.0, 120.0, 20.0),
         charger=ChargerLimits(20.0, 28.0, 4.0),
-        quench=QuenchLimits(42.0, 1.6, 90.0, 320.0),
+        quench=QuenchLimits(
+            travel_distance_m=42.0,
+            travel_speed_m_s=1.6,
+            water_flow_min_m3_h=80.0,
+            water_flow_max_m3_h=420.0,
+            water_flow_fallback_m3_h=120.0,
+            temp_target_c=95.0,
+            temp_soak_s=10.0,
+            spray_max_s=900.0,
+            thermal_m3_per_t_c=0.00042,
+            default_coke_t=28.0,
+            tank_capacity_m3=240.0,
+            tank_initial_m3=170.0,
+            tank_low_fraction=0.30,
+            tank_low_low_fraction=0.18,
+            tank_high_fraction=0.88,
+            tank_high_high_fraction=0.95,
+            tank_makeup_m3_h=180.0,
+            tank_return_fraction=0.72,
+        ),
         collector=CollectorLimits(90.0, 18.0, 6.0),
         door=DoorLimits(60.0, 45.0),
         heating=HeatingLimits(1800.0, 1180.0, 35.0, 4.0),
@@ -308,8 +373,22 @@ def config_to_mapping(cfg: PlatformConfig) -> dict:
             "quench": {
                 "travel_distance_m": cfg.quench.travel_distance_m,
                 "travel_speed_m_s": cfg.quench.travel_speed_m_s,
-                "spray_duration_s": cfg.quench.spray_duration_s,
-                "water_flow_m3_h": cfg.quench.water_flow_m3_h,
+                "water_flow_min_m3_h": cfg.quench.water_flow_min_m3_h,
+                "water_flow_max_m3_h": cfg.quench.water_flow_max_m3_h,
+                "water_flow_fallback_m3_h": cfg.quench.water_flow_fallback_m3_h,
+                "temp_target_c": cfg.quench.temp_target_c,
+                "temp_soak_s": cfg.quench.temp_soak_s,
+                "spray_max_s": cfg.quench.spray_max_s,
+                "thermal_m3_per_t_c": cfg.quench.thermal_m3_per_t_c,
+                "default_coke_t": cfg.quench.default_coke_t,
+                "tank_capacity_m3": cfg.quench.tank_capacity_m3,
+                "tank_initial_m3": cfg.quench.tank_initial_m3,
+                "tank_low_fraction": cfg.quench.tank_low_fraction,
+                "tank_low_low_fraction": cfg.quench.tank_low_low_fraction,
+                "tank_high_fraction": cfg.quench.tank_high_fraction,
+                "tank_high_high_fraction": cfg.quench.tank_high_high_fraction,
+                "tank_makeup_m3_h": cfg.quench.tank_makeup_m3_h,
+                "tank_return_fraction": cfg.quench.tank_return_fraction,
             },
             "collector": {
                 "pressure_target_pa": cfg.collector.pressure_target_pa,
