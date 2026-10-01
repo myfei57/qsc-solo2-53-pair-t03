@@ -50,6 +50,8 @@ class Api:
         add("POST", "/api/charge", self._charge)
         add("POST", "/api/push", self._push)
         add("POST", "/api/quench", self._quench)
+        add("POST", "/api/quench/resume", self._quench_resume)
+        add("POST", "/api/quench/sensor", self._quench_sensor)
         add("POST", "/api/reverse", self._reverse)
         add("POST", "/api/clean", self._clean)
         add("POST", "/api/calibrate", self._calibrate)
@@ -161,7 +163,18 @@ class Api:
 
     def _quench(self, params: dict, body: dict) -> dict:
         return self._platform.quench(
-            oven=str(body.get("oven", "oven01")), dt=_as_float(body, "dt", 1.0)
+            oven=str(body.get("oven", "oven01")),
+            dt=_as_float(body, "dt", 1.0),
+            low_level_policy=str(body.get("low_level_policy", "throttle")),
+        )
+
+    def _quench_resume(self, params: dict, body: dict) -> dict:
+        token = body.get("token")
+        return self._platform.resume_quench(None if token is None else str(token))
+
+    def _quench_sensor(self, params: dict, body: dict) -> dict:
+        return self._platform.quench_sensor_fault(
+            str(body.get("sensor", "coke_temp")), bool(body.get("lost", True))
         )
 
     def _reverse(self, params: dict, body: dict) -> dict:

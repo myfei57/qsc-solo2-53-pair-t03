@@ -25,8 +25,17 @@
     "quench": {
       "travel_distance_m": 42.0,
       "travel_speed_m_s": 1.6,
-      "spray_duration_s": 90.0,
-      "water_flow_m3_h": 320.0
+      "spray_duration_s": 240.0,
+      "water_flow_m3_h": 320.0,
+      "quench_target_c": 80.0,
+      "coke_initial_c": 1050.0,
+      "min_intensity": 0.35,
+      "cool_rate_c_per_m3": 100.0,
+      "pool_capacity_m3": 60.0,
+      "pool_low_ratio": 0.3,
+      "pool_high_ratio": 0.95,
+      "pool_recharge_m3_h": 120.0,
+      "pool_initial_m3": 45.0
     },
     "collector": {
       "pressure_target_pa": 90.0,

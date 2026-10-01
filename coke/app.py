@@ -144,11 +144,13 @@ class Platform:
 
         oven = str(report.get("oven", ""))
         for step in report.get("steps", []):
+            raw = dict(step.get("detail", {}))
+            severity = str(raw.pop("severity", "notice"))
+            message = str(raw.pop("message", ""))
             detail = {
                 key: value
-                for key, value in step.get("detail", {}).items()
-                if not isinstance(value, (dict, list))
-                and key not in ("oven", "op_id", "severity", "message")
+                for key, value in raw.items()
+                if not isinstance(value, (dict, list)) and key not in ("oven", "op_id")
             }
             self.bus.publish(
                 Event.of(
@@ -157,7 +159,8 @@ class Platform:
                     step["action"],
                     oven=oven,
                     op_id=op_id,
-                    severity="notice",
+                    severity=severity,
+                    message=message,
                     **detail,
                 )
             )
@@ -268,18 +271,48 @@ class Platform:
             self._persist()
             return {**report, **summary}
 
-    def quench(self, oven: str = DEFAULT_OVEN, dt: float = 1.0) -> dict:
-        """熄焦编排：接焦 → 走行 → 喷淋。"""
+    def quench(self, oven: str = DEFAULT_OVEN, dt: float = 1.0, low_level_policy: str = "throttle") -> dict:
+        """熄焦编排：接焦 → 走行 → 按温度回读动态喷淋 → 水量结算。
+
+        低水位策略按炉次指定：``throttle`` 降喷淋保水位，``maintain`` 维持喷淋
+        并报警。喷淋强度与水池水位写入趋势，供控制台展示；结算、轨迹与审计事件
+        出自同一份报告，口径一致。
+        """
 
         with self._lock:
             op_id = self.ids.next()
-            report = quench_oven(self.quench_car, oven, dt)
+            report = quench_oven(self.quench_car, oven, dt, low_level_policy=low_level_policy)
             report["travel_eta_s"] = self.quench_car.plan.eta_s()
+            base_ts = self.clock.now()
+            for index, record in enumerate(report.get("trace", [])):
+                ts = base_ts + index * record["dt_s"]
+                self.trend.append("spray_intensity", ts, record["intensity"])
+                if record["level_m3"] is not None:
+                    self.trend.append("pool_level_m3", ts, record["level_m3"])
+                if record["temp_c"] is not None:
+                    self.trend.append("coke_temp_c", ts, record["temp_c"])
             summary = self._record_operation(op_id, "quench", report)
             summary["op_id"] = op_id
             self._operations += 1
             self._persist()
             return {**report, **summary}
+
+    def resume_quench(self, token: str | None = None) -> dict:
+        """恢复被低水位策略挂起的喷淋；重复触发按幂等重放处理并落审计。"""
+
+        with self._lock:
+            result = self.quench_car.resume_spray(token)
+            self.bus.publish(
+                Event.of(
+                    "quench",
+                    "quench",
+                    "spray_resumed" if result["resumed"] else "spray_resume_replayed",
+                    severity="notice",
+                    message="喷淋恢复" if result["resumed"] else "喷淋恢复重复触发，幂等忽略",
+                    **result,
+                )
+            )
+            return result
 
     def reverse(self, oven: str = DEFAULT_OVEN, temperature_c: float | None = None) -> dict:
         """换向编排：废气阀 → 煤气阀 → 炉温确认。"""
@@ -394,6 +427,30 @@ class Platform:
         before = self.collector.pressure_pa
         after = self.collector.disturb(delta_pa)
         return {"before_pa": round(before, 2), "after_pa": round(after, 2), "settled": self.collector.settled()}
+
+    def quench_sensor_fault(self, sensor: str, lost: bool) -> dict:
+        """注入或解除熄焦回读丢失（温度／水位），用于演练部分失败的保守处理。"""
+
+        targets = {"coke_temp": self.quench_car.bed, "pool_level": self.quench_car.pool}
+        if sensor not in targets:
+            raise CokeError(f"未知回读 {sensor!r}，必须是 {sorted(targets)} 之一", component="quench")
+        target = targets[sensor]
+        if lost:
+            target.lose_reading()
+        else:
+            target.restore_reading()
+        self.bus.publish(
+            Event.of(
+                "quench",
+                "quench",
+                "sensor_fault",
+                severity="warning" if lost else "notice",
+                message=f"{sensor} 回读{'丢失' if lost else '恢复'}",
+                sensor=sensor,
+                lost=lost,
+            )
+        )
+        return {"sensor": sensor, "lost": lost}
 
     def note_error(self, error: CokeError) -> dict:
         """把平台异常写入审计，返回落盘记录。"""

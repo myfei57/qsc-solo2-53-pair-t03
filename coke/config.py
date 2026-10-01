@@ -108,21 +108,65 @@ class ChargerLimits:
 
 @dataclass(frozen=True)
 class QuenchLimits:
-    """熄焦车走行与喷淋约束。"""
+    """熄焦车走行、喷淋与回用水池约束。
+
+    水位下限只按池容比例计算（``pool_capacity_m3 * pool_low_ratio``），不随班次
+    用量漂移；班次用量只作为"临近下限"判断的提前量参与，保证阈值跨班可比、
+    审计可对照。
+    """
 
     travel_distance_m: float
     travel_speed_m_s: float
     spray_duration_s: float
     water_flow_m3_h: float
+    quench_target_c: float
+    coke_initial_c: float
+    min_intensity: float
+    cool_rate_c_per_m3: float
+    pool_capacity_m3: float
+    pool_low_ratio: float
+    pool_high_ratio: float
+    pool_recharge_m3_h: float
+    pool_initial_m3: float
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, Any]) -> "QuenchLimits":
-        return cls(
+        limits = cls(
             travel_distance_m=_number(section, "travel_distance_m", minimum=1.0),
             travel_speed_m_s=_number(section, "travel_speed_m_s", minimum=0.1),
             spray_duration_s=_number(section, "spray_duration_s", minimum=1.0),
             water_flow_m3_h=_number(section, "water_flow_m3_h", minimum=1.0),
+            quench_target_c=_number(section, "quench_target_c", minimum=1.0),
+            coke_initial_c=_number(section, "coke_initial_c", minimum=1.0),
+            min_intensity=_number(section, "min_intensity", minimum=0.0),
+            cool_rate_c_per_m3=_number(section, "cool_rate_c_per_m3", minimum=0.1),
+            pool_capacity_m3=_number(section, "pool_capacity_m3", minimum=1.0),
+            pool_low_ratio=_number(section, "pool_low_ratio", minimum=0.0),
+            pool_high_ratio=_number(section, "pool_high_ratio", minimum=0.0),
+            pool_recharge_m3_h=_number(section, "pool_recharge_m3_h", minimum=0.0),
+            pool_initial_m3=_number(section, "pool_initial_m3", minimum=0.0),
         )
+        if limits.quench_target_c >= limits.coke_initial_c:
+            raise ConfigError("浇透目标温度必须低于红焦初始温度", component="config")
+        if not 0.0 < limits.min_intensity <= 1.0:
+            raise ConfigError("最小喷淋强度必须落在 (0, 1] 区间", component="config")
+        if not 0.0 < limits.pool_low_ratio < limits.pool_high_ratio <= 1.0:
+            raise ConfigError("水池水位下限比例必须小于上限比例且不超过 1", component="config")
+        if limits.pool_initial_m3 > limits.pool_capacity_m3:
+            raise ConfigError("水池初始水位不得超过池容", component="config")
+        return limits
+
+    @property
+    def pool_low_limit_m3(self) -> float:
+        """水位下限（定死：按池容比例计算）。"""
+
+        return self.pool_capacity_m3 * self.pool_low_ratio
+
+    @property
+    def pool_high_limit_m3(self) -> float:
+        """水位上限（漫溢预警线）。"""
+
+        return self.pool_capacity_m3 * self.pool_high_ratio
 
 
 @dataclass(frozen=True)
@@ -273,7 +317,9 @@ def default_config() -> PlatformConfig:
         pusher=PusherLimits(3200.0, 25.0, 3350.0, 12.0, 38.0, 24.0),
         guide=GuideLimits(15.0, 120.0, 20.0),
         charger=ChargerLimits(20.0, 28.0, 4.0),
-        quench=QuenchLimits(42.0, 1.6, 90.0, 320.0),
+        quench=QuenchLimits(
+            42.0, 1.6, 240.0, 320.0, 80.0, 1050.0, 0.35, 100.0, 60.0, 0.3, 0.95, 120.0, 45.0
+        ),
         collector=CollectorLimits(90.0, 18.0, 6.0),
         door=DoorLimits(60.0, 45.0),
         heating=HeatingLimits(1800.0, 1180.0, 35.0, 4.0),
@@ -310,6 +356,15 @@ def config_to_mapping(cfg: PlatformConfig) -> dict:
                 "travel_speed_m_s": cfg.quench.travel_speed_m_s,
                 "spray_duration_s": cfg.quench.spray_duration_s,
                 "water_flow_m3_h": cfg.quench.water_flow_m3_h,
+                "quench_target_c": cfg.quench.quench_target_c,
+                "coke_initial_c": cfg.quench.coke_initial_c,
+                "min_intensity": cfg.quench.min_intensity,
+                "cool_rate_c_per_m3": cfg.quench.cool_rate_c_per_m3,
+                "pool_capacity_m3": cfg.quench.pool_capacity_m3,
+                "pool_low_ratio": cfg.quench.pool_low_ratio,
+                "pool_high_ratio": cfg.quench.pool_high_ratio,
+                "pool_recharge_m3_h": cfg.quench.pool_recharge_m3_h,
+                "pool_initial_m3": cfg.quench.pool_initial_m3,
             },
             "collector": {
                 "pressure_target_pa": cfg.collector.pressure_target_pa,
